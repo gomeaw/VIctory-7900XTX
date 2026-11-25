@@ -14,7 +14,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify group IDs from translated shader
         run: |
-          $output = cargo test --locked -p victory-shader --lib the_group_id_in_x_starts_at_the_host_base -- --nocapture | Out-String
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-shader --lib the_group_id_in_x_starts_at_the_host_base -- --nocapture 2>&1 | Out-String
           $status = $LASTEXITCODE
           Write-Host $output
           if ($status -ne 0 -or $output -notmatch 'checked translated group IDs at bases 0 and 65,535 on WARP') {
@@ -22,7 +23,8 @@ jobs:
           }
       - name: Verify original and split indirect execution
         run: |
-          $output = cargo test --locked -p victory-gpu --lib warp_split_runs_every_group_of_a_wide_dispatch_once -- --nocapture | Out-String
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-gpu --lib warp_split_runs_every_group_of_a_wide_dispatch_once -- --nocapture 2>&1 | Out-String
           $status = $LASTEXITCODE
           Write-Host $output
           if ($status -ne 0 -or $output -notmatch 'checked all eight wide dispatch cases on WARP') {
