@@ -1608,6 +1608,7 @@ fn check(player: &mut Player, options: &Options, expected: &Outcome, what: &str)
 #[test]
 fn a_frame_is_recorded_and_replayed() {
     let debug = std::env::var_os("VICTORY_TEST_D3D_DEBUG").is_some();
+    let warp = std::env::var_os("VICTORY_D3D12_WARP").is_some();
     let mut device: Option<ID3D12Device> = None;
     // SAFETY: plain creation.
     unsafe {
@@ -1616,7 +1617,16 @@ fn a_frame_is_recorded_and_replayed() {
             D3D12GetDebugInterface(&mut layer).unwrap();
             layer.unwrap().EnableDebugLayer();
         }
-        let _ = D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device);
+        if warp {
+            let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).unwrap();
+            let adapter: IDXGIAdapter1 = factory.EnumWarpAdapter().unwrap();
+            let desc = adapter.GetDesc1().unwrap();
+            assert_ne!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32, 0);
+            eprintln!("using WARP adapter: {}", String::from_utf16_lossy(&desc.Description).trim_end_matches('\0'));
+            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).unwrap();
+        } else {
+            let _ = D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device);
+        }
     }
     let Some(device) = device else {
         eprintln!("no adapter: skipped");
