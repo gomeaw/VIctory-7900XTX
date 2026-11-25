@@ -20,7 +20,8 @@ jobs:
         with:
           shared-key: nvidia-replay
       - name: Run the target workspace replay tests
-        run: cargo test --locked -p victory-gpu --features diagnostics --lib replay:: -- --test-threads=1
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib replay:: -- --test-threads=1
       - name: Run the synthetic frame with split barriers and D3D12 validation
         run: cargo test --locked -p victory-gpu --features diagnostics --test replay -- --test-threads=1 --nocapture
       - name: Capture the original replay error for the same frame
