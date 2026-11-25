@@ -1,0 +1,38 @@
+name: NVIDIA adapter validation
+on:
+  push:
+    branches: [validation/nvidia-d3d12-adapter]
+permissions:
+  contents: read
+jobs:
+  adapter:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Test explicit adapter matching
+        run: cargo test --locked -p victory-shader --lib an_explicit_adapter_matches_an_index_or_name
+      - name: Build the runtime and offline validator
+        run: cargo build --locked -p victory
+      - name: Validate explicit selection and the software override
+        run: |
+          $empty = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/victory-empty-shaders"
+          $env:VICTORY_D3D12_ADAPTER = 'nonexistent-victory-test-adapter'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $failure = & target/debug/victory.exe translate --pipelines $empty.FullName 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $failure
+          if ($status -eq 0 -or $failure -notmatch 'matched no hardware adapter') {
+            throw 'An invalid explicit selection must fail in the CLI'
+          }
+          $env:VICTORY_WARP = '1'
+          $warp = & target/debug/victory.exe translate --pipelines $empty.FullName 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $warp
+          if ($status -ne 0 -or $warp -notmatch 'pipeline adapter: Microsoft Basic Render Driver') {
+            throw 'An explicit software-adapter run must use WARP'
+          }
+      - name: Asset policy
+        run: cargo xtask policy
