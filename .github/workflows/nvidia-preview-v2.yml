@@ -12,9 +12,11 @@ jobs:
       - uses: actions/checkout@v5
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Windows workspace tests
+        with:
+          cache-on-failure: true
+      - name: Windows workspace tests (serial)
         # The older Windows comparison reproduced this WARP failure on upstream 0a43566 too.
-        run: cargo test --workspace --locked -- --skip pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws
+        run: cargo test --workspace --locked -- --test-threads=1 --skip pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws
       - name: Synthetic frame with D3D12 validation
         env:
           VICTORY_D3D12_WARP: '1'
