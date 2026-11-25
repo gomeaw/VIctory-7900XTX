@@ -1,0 +1,35 @@
+name: NVIDIA buffer views without raw twins
+on:
+  push:
+    branches: [validation/nvidia-raw-buffer-views]
+permissions:
+  contents: read
+jobs:
+  raw-views:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      VICTORY_D3D12_WARP: '1'
+      VICTORY_RAW_VIEWS: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Compare the old and corrected view placement on WARP
+        run: |
+          $file = 'crates/victory-gpu/src/descriptor/host.rs'
+          $source = [System.IO.File]::ReadAllText($file)
+          [System.IO.File]::WriteAllText($file, $source.Replace('if raw || needs_raw {', 'if raw {'))
+          $PSNativeCommandUseErrorActionPreference = $false
+          $before = cargo test --locked -p victory-gpu --features diagnostics --lib views_off_their_elements_get_a_copy_of_their_bytes -- --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $before
+          [System.IO.File]::WriteAllText($file, $source)
+          if ($status -eq 0 -or $before -notmatch 'assertion `left == right` failed') { throw 'The old view placement should fail the copy assertion' }
+          $after = cargo test --locked -p victory-gpu --features diagnostics --lib descriptor::host::tests -- --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $after
+          if ($status -ne 0) { exit $status }
+          if ($after -notmatch 'the structured slot without a raw twin uses a view-relative copy') { throw 'WARP copy verification was skipped' }
+      - name: Asset policy
+        run: cargo xtask policy
