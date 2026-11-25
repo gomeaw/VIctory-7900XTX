@@ -2406,6 +2406,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dispatch_split_changes_cache_settings_only_on_wave32() {
+        use super::lower::{TEST_GROUP_BASE, TEST_HOST_WAVE};
+
+        let old_wave = TEST_HOST_WAVE.replace(Some(32));
+        let old_split = TEST_GROUP_BASE.replace(Some(false));
+        let wave32_off = super::host_settings();
+        TEST_GROUP_BASE.set(Some(true));
+        let wave32_on = super::host_settings();
+        TEST_HOST_WAVE.set(Some(64));
+        let wave64_on = super::host_settings();
+        TEST_GROUP_BASE.set(Some(false));
+        let wave64_off = super::host_settings();
+        TEST_HOST_WAVE.set(old_wave);
+        TEST_GROUP_BASE.set(old_split);
+
+        assert_ne!(wave32_off, wave32_on);
+        assert_eq!(wave64_off, wave64_on);
+    }
+
     /// A program that reads its thread-group id in x takes the dispatch's
     /// first group from a user-data dword the host sets (`USER_GROUP_BASE`)
     /// and adds the host's group id to it: the host runs the groups past
