@@ -1,0 +1,18 @@
+name: Verify PR 17 present status
+on:
+  push:
+    branches: [validation/nvidia-present-pr17]
+permissions:
+  contents: read
+jobs:
+  meter:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Present status regression test
+        run: cargo test --locked -p victory-gpu --lib the_meter_counts_successful_presents_across_a_failure -- --nocapture
+      - name: Present status regression test with diagnostics
+        run: cargo test --locked -p victory-gpu --features diagnostics --lib the_meter_counts_successful_presents_across_a_failure -- --nocapture
