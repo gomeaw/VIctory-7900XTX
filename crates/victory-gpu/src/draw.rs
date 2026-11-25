@@ -1068,17 +1068,19 @@ impl State {
             return;
         }
         self.host_targets = Some(now);
-        let rtvs: Vec<_> = views.iter().map(|(texture, desc)| host.rtv(*texture, desc.as_ref())).collect();
-        let dsv = dsv.map(|(texture, record)| host.dsv(texture, record.depth_desc().as_ref()));
-        // SAFETY: an open list; the views were just made.
-        unsafe {
-            list.list.OMSetRenderTargets(
-                rtvs.len() as u32,
-                (!rtvs.is_empty()).then_some(rtvs.as_ptr()),
-                false,
-                dsv.as_ref().map(std::ptr::from_ref),
-            )
-        };
+        host.output_views(|output| {
+            let rtvs: Vec<_> = views.iter().map(|(texture, desc)| output.rtv(*texture, desc.as_ref())).collect();
+            let dsv = dsv.map(|(texture, record)| output.dsv(texture, record.depth_desc().as_ref()));
+            // SAFETY: an open list; the views live through the call.
+            unsafe {
+                list.list.OMSetRenderTargets(
+                    rtvs.len() as u32,
+                    (!rtvs.is_empty()).then_some(rtvs.as_ptr()),
+                    false,
+                    dsv.as_ref().map(std::ptr::from_ref),
+                )
+            };
+        });
     }
 
     /// Viewports, scissors, the blend factor and the stencil reference: set

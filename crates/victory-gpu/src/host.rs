@@ -1519,7 +1519,6 @@ fn record_plane_pass(
                 },
                 ..Default::default()
             };
-            let target = host.dsv(depth, Some(&target));
             let (width, height) = ((of.Width >> mip).max(1) as u32, (of.Height >> mip).max(1));
             let cpu = D3D12_CPU_DESCRIPTOR_HANDLE {
                 ptr: pass.cpu + (slot * pass.step) as usize,
@@ -1536,7 +1535,10 @@ fn record_plane_pass(
                 list.SetGraphicsRootSignature(&root);
                 list.SetPipelineState(&pipeline);
                 list.SetGraphicsRootDescriptorTable(0, gpu);
-                list.OMSetRenderTargets(0, None, false, Some(&target));
+                host.output_views(|views| {
+                    let dsv = views.dsv(depth, Some(&target));
+                    list.OMSetRenderTargets(0, None, false, Some(&dsv));
+                });
                 list.RSSetViewports(&[D3D12_VIEWPORT {
                     TopLeftX: 0.0,
                     TopLeftY: 0.0,
@@ -6018,19 +6020,31 @@ impl Host {
         first_error
     }
 
+    /// Prepare and record the CPU descriptors for one output-merger call or clear.
+    pub(crate) fn output_views(&self, record: impl FnOnce(&mut OutputViews<'_>)) {
+        record(&mut OutputViews { host: self });
+    }
+}
+
+pub(crate) struct OutputViews<'a> {
+    host: &'a Host,
+}
+
+impl OutputViews<'_> {
     /// A host render target view of `resource`, valid until it is recorded.
     pub(crate) fn rtv(
-        &self,
+        &mut self,
         resource: Option<&ID3D12Resource>,
         desc: Option<&D3D12_RENDER_TARGET_VIEW_DESC>,
     ) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        let slot = self.next_rtv.fetch_add(1, Ordering::Relaxed) % RTV_RING;
+        let host = self.host;
+        let slot = host.next_rtv.fetch_add(1, Ordering::Relaxed) % RTV_RING;
         // SAFETY: a slot of our heap and a live resource, or none with a
         // description (a typed null view).
         unsafe {
-            let mut handle = self.rtvs.GetCPUDescriptorHandleForHeapStart();
-            handle.ptr += (slot * self.rtv_size) as usize;
-            self.device
+            let mut handle = host.rtvs.GetCPUDescriptorHandleForHeapStart();
+            handle.ptr += (slot * host.rtv_size) as usize;
+            host.device
                 .CreateRenderTargetView(resource, desc.map(|d| d as *const _), handle);
             handle
         }
@@ -6038,16 +6052,17 @@ impl Host {
 
     /// A host depth view of `resource`, valid until it is recorded.
     pub(crate) fn dsv(
-        &self,
+        &mut self,
         resource: &ID3D12Resource,
         desc: Option<&D3D12_DEPTH_STENCIL_VIEW_DESC>,
     ) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        let slot = self.next_dsv.fetch_add(1, Ordering::Relaxed) % RTV_RING;
+        let host = self.host;
+        let slot = host.next_dsv.fetch_add(1, Ordering::Relaxed) % RTV_RING;
         // SAFETY: a slot of our heap and a live resource.
         unsafe {
-            let mut handle = self.dsvs.GetCPUDescriptorHandleForHeapStart();
-            handle.ptr += (slot * self.dsv_size) as usize;
-            self.device
+            let mut handle = host.dsvs.GetCPUDescriptorHandleForHeapStart();
+            handle.ptr += (slot * host.dsv_size) as usize;
+            host.device
                 .CreateDepthStencilView(resource, desc.map(|d| d as *const _), handle);
             handle
         }
