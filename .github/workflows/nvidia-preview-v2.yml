@@ -1,0 +1,24 @@
+name: NVIDIA preview integration
+on:
+  push:
+    branches: [validation/nvidia-preview-v2]
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Windows workspace tests
+        # The older Windows comparison reproduced this WARP failure on upstream 0a43566 too.
+        run: cargo test --workspace --locked -- --skip pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws
+      - name: Synthetic frame with D3D12 validation
+        env:
+          VICTORY_D3D12_WARP: '1'
+          VICTORY_TEST_D3D_DEBUG: '1'
+        run: cargo test --locked -p victory-gpu --features diagnostics --test replay -- --test-threads=1 --nocapture
+      - name: Optimized diagnostic build
+        run: cargo check --locked --profile diag -p victory --features diagnostics
