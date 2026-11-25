@@ -10,10 +10,27 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - name: Windows workspace tests
-        run: cargo test --workspace --locked
+      - name: Compare the depth-bounds failure against unmodified main
+        run: |
+          $changed = @(git diff --name-only 0a43566 HEAD -- apps crates README.md)
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -eq 0) { throw 'Could not find the integration patch' }
+          git restore --source=0a43566 -- @changed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-gpu --lib depth_bounds_pipeline_loads_and_filters_draws -- --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $output
+          if ($status -eq 0 -or $output -notmatch 'depth 0.5 outside \[0.6, 1.0\] must be rejected') {
+            throw 'Did not reproduce the same depth-bounds failure on main'
+          }
+          git restore --source=$env:GITHUB_SHA -- @changed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows workspace tests apart from the reproduced failure
+        run: cargo test --workspace --locked -- --skip pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws
       - name: Synthetic frame with D3D12 validation
         env:
           VICTORY_D3D12_WARP: '1'
