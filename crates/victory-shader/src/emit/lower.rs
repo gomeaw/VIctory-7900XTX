@@ -1400,7 +1400,7 @@ pub(super) fn wave_ticket_prologue(s: &mut Shader, slot: u32, wave: u32) -> V {
         first
     } else {
         let on = s.m.bool(true);
-        let live = s.op(meet, "waveAllBitCount", Attr::NoUnwind, i32t, 135, &[on]);
+        let live = s.op(meet, "waveAllOp", Attr::NoUnwind, i32t, 135, &[on]);
         let full = s.m.cmp(meet, pred::EQ, live, width);
         s.m.bin(meet, Bin::And, first, full)
     };
