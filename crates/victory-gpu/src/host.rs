@@ -1115,6 +1115,117 @@ mod tests {
     use super::*;
 
     #[test]
+    fn another_worker_cannot_retarget_a_pending_clear() {
+        let Some(host) = host() else {
+            eprintln!("no D3D12 device; pending output clear test skipped");
+            return;
+        };
+        let make = |format, flags, state| {
+            let heap = D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                ..Default::default()
+            };
+            let desc = D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: 1,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: format,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Flags: flags,
+                ..Default::default()
+            };
+            let mut texture = None;
+            // SAFETY: a valid texture description and a live output pointer.
+            unsafe {
+                host.device.CreateCommittedResource(
+                    &heap, D3D12_HEAP_FLAG_NONE, &desc, state, None, &mut texture,
+                )
+            }.unwrap();
+            texture.unwrap()
+        };
+        let color = || make(DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        let depth = || make(DXGI_FORMAT_D32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        let [first_color, second_color] = [color(), color()];
+        let [first_depth, second_depth] = [depth(), depth()];
+        let list = host.new_list().unwrap();
+        for (color, depth) in [(&first_color, &first_depth), (&second_color, &second_depth)] {
+            host.output_views(|views| {
+                let rtv = views.rtv(Some(color), None);
+                let dsv = views.dsv(depth, None);
+                // SAFETY: the list is open and the textures are in their clear states.
+                unsafe {
+                    list.list.ClearRenderTargetView(rtv, &[0.0; 4], None);
+                    list.list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+                }
+            });
+        }
+        host.output_views(|views| {
+            let rtv = views.rtv(Some(&first_color), None);
+            let dsv = views.dsv(&first_depth, None);
+            // Hold this worker between descriptor creation and recording while
+            // the other worker allocates an entire old process-wide ring.
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for _ in 0..1024 {
+                        host.output_views(|views| {
+                            views.rtv(Some(&second_color), None);
+                            views.dsv(&second_depth, None);
+                        });
+                    }
+                }).join().unwrap();
+            });
+            // SAFETY: the list is open and both pairs of textures are still alive.
+            unsafe {
+                list.list.ClearRenderTargetView(rtv, &[1.0, 0.0, 0.0, 0.0], None);
+                list.list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 0.25, 0, None);
+            }
+        });
+
+        let readback = host.read_back_buffer(2048).unwrap();
+        let textures = [
+            (&first_color, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            (&second_color, D3D12_RESOURCE_STATE_RENDER_TARGET),
+            (&first_depth, D3D12_RESOURCE_STATE_DEPTH_WRITE),
+            (&second_depth, D3D12_RESOURCE_STATE_DEPTH_WRITE),
+        ];
+        for (i, (texture, before)) in textures.into_iter().enumerate() {
+            let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+            // SAFETY: an open list, live textures, and disjoint readback footprints.
+            unsafe {
+                host.device.GetCopyableFootprints(
+                    &texture.GetDesc(), 0, 1, 512 * i as u64, Some(&mut footprint), None, None, None,
+                );
+                let src = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::transmute_copy(texture),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+                };
+                let dst = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: std::mem::transmute_copy(&readback),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { PlacedFootprint: footprint },
+                };
+                list.list.ResourceBarrier(&[transition(texture, before, D3D12_RESOURCE_STATE_COPY_SOURCE)]);
+                list.list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
+            }
+        }
+        list.close();
+        host.execute(&[&list]);
+        let mut mapped = std::ptr::null_mut();
+        // SAFETY: the GPU finished writing the 2048-byte readback buffer.
+        let pixels: [u32; 4] = unsafe {
+            readback.Map(0, Some(&D3D12_RANGE { Begin: 0, End: 2048 }), Some(&mut mapped)).unwrap();
+            let values = std::array::from_fn(|i| mapped.cast::<u32>().add(128 * i).read());
+            readback.Unmap(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }));
+            values
+        };
+        assert_eq!(pixels, [255, 0, 0.25f32.to_bits(), 1.0f32.to_bits()], "pending clears reached the wrong textures");
+        eprintln!("both pending clears reached their own textures after 1024 descriptors on another recording thread");
+    }
+
+    #[test]
     fn warp_adapter_accepts_only_software() {
         // This probes DXGI without creating a D3D12 device or running a title.
         // SAFETY: plain DXGI adapter queries.
