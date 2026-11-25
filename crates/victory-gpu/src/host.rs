@@ -32,10 +32,6 @@ pub(crate) fn texture_state(state: u32) -> u32 {
     pc_state(state) & !BUFFER_ONLY
 }
 
-/// Render target views live only until their command is recorded, so a
-/// ring of host descriptors is enough.
-const RTV_RING: u32 = 1024;
-
 pub(crate) struct Host {
     pub(crate) device: ID3D12Device,
     queue: ID3D12CommandQueue,
@@ -43,16 +39,9 @@ pub(crate) struct Host {
     /// The last value signalled on `fence`, behind the submission lock.
     submitted: Mutex<u64>,
     event: HANDLE,
-    rtvs: ID3D12DescriptorHeap,
-    rtv_size: u32,
-    /// A ring of depth views, used as `rtvs`.
-    dsvs: ID3D12DescriptorHeap,
-    dsv_size: u32,
-    next_dsv: AtomicU32,
     /// With `VICTORY_D3D12_DEBUG` set (diagnostics builds): the debug
     /// layer's messages.
     messages: Option<ID3D12InfoQueue>,
-    next_rtv: AtomicU32,
     presenter: Mutex<Option<Presenter>>,
     /// The adapter the device is on, for its memory budget
     /// ([`Host::video_memory`]); `None` if the system does not name it.
@@ -934,20 +923,6 @@ fn create() -> windows::core::Result<Host> {
         })?;
         let fence: ID3D12Fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
         let event = CreateEventW(None, false, false, None)?;
-        let rtvs: ID3D12DescriptorHeap =
-            device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                NumDescriptors: RTV_RING,
-                ..Default::default()
-            })?;
-        let rtv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        let dsvs: ID3D12DescriptorHeap =
-            device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
-                Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-                NumDescriptors: RTV_RING,
-                ..Default::default()
-            })?;
-        let dsv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
         let adapter = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))
             .and_then(|factory| factory.EnumAdapterByLuid::<IDXGIAdapter3>(device.GetAdapterLuid()))
             .ok();
@@ -968,13 +943,7 @@ fn create() -> windows::core::Result<Host> {
             fence,
             submitted: Mutex::new(0),
             event,
-            rtvs,
-            rtv_size,
-            dsvs,
-            dsv_size,
-            next_dsv: AtomicU32::new(0),
             messages,
-            next_rtv: AtomicU32::new(0),
             presenter: Mutex::new(None),
             adapter,
         })
@@ -6132,51 +6101,94 @@ impl Host {
     }
 
     /// Prepare and record the CPU descriptors for one output-merger call or clear.
+    /// D3D12 copies these descriptors during recording. Each thread owns its
+    /// scratch heaps through the call, even if it is preempted before recording.
     pub(crate) fn output_views(&self, record: impl FnOnce(&mut OutputViews<'_>)) {
-        record(&mut OutputViews { host: self });
+        thread_local! {
+            static HEAPS: std::cell::RefCell<Option<OutputHeaps>> = const { std::cell::RefCell::new(None) };
+        }
+        HEAPS.with(|heaps| {
+            let mut heaps = heaps.borrow_mut();
+            let heaps = heaps.get_or_insert_with(|| OutputHeaps {
+                colors: OutputHeap::new(
+                    &self.device,
+                    D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                    D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT,
+                ),
+                depth: OutputHeap::new(&self.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1),
+            });
+            record(&mut OutputViews { device: &self.device, heaps, next_rtv: 0, has_dsv: false });
+        });
+    }
+}
+
+struct OutputHeaps {
+    colors: OutputHeap,
+    depth: OutputHeap,
+}
+
+struct OutputHeap {
+    _heap: ID3D12DescriptorHeap,
+    start: usize,
+    step: usize,
+}
+
+impl OutputHeap {
+    fn new(device: &ID3D12Device, kind: D3D12_DESCRIPTOR_HEAP_TYPE, slots: u32) -> Self {
+        // SAFETY: a CPU-only heap description and a live device.
+        unsafe {
+            let heap: ID3D12DescriptorHeap = device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: kind,
+                NumDescriptors: slots,
+                ..Default::default()
+            }).unwrap_or_else(|e| fail(format_args!("output descriptor heap: {e}")));
+            Self {
+                start: heap.GetCPUDescriptorHandleForHeapStart().ptr,
+                step: device.GetDescriptorHandleIncrementSize(kind) as usize,
+                _heap: heap,
+            }
+        }
+    }
+
+    fn slot(&self, index: u32) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        D3D12_CPU_DESCRIPTOR_HANDLE { ptr: self.start + index as usize * self.step }
     }
 }
 
 pub(crate) struct OutputViews<'a> {
-    host: &'a Host,
+    device: &'a ID3D12Device,
+    heaps: &'a OutputHeaps,
+    next_rtv: u32,
+    has_dsv: bool,
 }
 
 impl OutputViews<'_> {
-    /// A host render target view of `resource`, valid until it is recorded.
+    /// A host render target view, valid within the recording scope.
     pub(crate) fn rtv(
         &mut self,
         resource: Option<&ID3D12Resource>,
         desc: Option<&D3D12_RENDER_TARGET_VIEW_DESC>,
     ) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        let host = self.host;
-        let slot = host.next_rtv.fetch_add(1, Ordering::Relaxed) % RTV_RING;
-        // SAFETY: a slot of our heap and a live resource, or none with a
-        // description (a typed null view).
-        unsafe {
-            let mut handle = host.rtvs.GetCPUDescriptorHandleForHeapStart();
-            handle.ptr += (slot * host.rtv_size) as usize;
-            host.device
-                .CreateRenderTargetView(resource, desc.map(|d| d as *const _), handle);
-            handle
-        }
+        assert!(self.next_rtv < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT);
+        let slot = self.heaps.colors.slot(self.next_rtv);
+        self.next_rtv += 1;
+        // SAFETY: this thread owns the slot and the resource is live, or the
+        // description supplies the type of a null view.
+        unsafe { self.device.CreateRenderTargetView(resource, desc.map(std::ptr::from_ref), slot) };
+        slot
     }
 
-    /// A host depth view of `resource`, valid until it is recorded.
+    /// A host depth view, valid within the recording scope.
     pub(crate) fn dsv(
         &mut self,
         resource: &ID3D12Resource,
         desc: Option<&D3D12_DEPTH_STENCIL_VIEW_DESC>,
     ) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        let host = self.host;
-        let slot = host.next_dsv.fetch_add(1, Ordering::Relaxed) % RTV_RING;
-        // SAFETY: a slot of our heap and a live resource.
-        unsafe {
-            let mut handle = host.dsvs.GetCPUDescriptorHandleForHeapStart();
-            handle.ptr += (slot * host.dsv_size) as usize;
-            host.device
-                .CreateDepthStencilView(resource, desc.map(|d| d as *const _), handle);
-            handle
-        }
+        assert!(!std::mem::replace(&mut self.has_dsv, true));
+        let slot = self.heaps.depth.slot(0);
+        // SAFETY: this thread owns the slot and the resource is live.
+        unsafe { self.device.CreateDepthStencilView(resource, desc.map(std::ptr::from_ref), slot) };
+        slot
     }
 }
 
