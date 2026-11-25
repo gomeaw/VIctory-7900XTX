@@ -32,3 +32,6 @@ jobs:
           }
       - name: Asset policy
         run: cargo xtask policy
+      - name: Verify both records are retained by replay
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib replay::edit::tests::clamps_are_found_kept_and_skipped
