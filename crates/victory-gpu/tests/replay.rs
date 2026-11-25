@@ -26,8 +26,10 @@ use windows::core::{Interface, PCSTR, s, w};
 
 const SIZE: u32 = 128;
 
+// The descriptor entries stay fixed while a list runs, but their aliased
+// textures can be copied into between draws.
 const DRAW: &str = r#"
-#define RS "RootConstants(num32BitConstants=2, b0), CBV(b1), DescriptorTable(SRV(t0, numDescriptors=unbounded)), DescriptorTable(Sampler(s0))"
+#define RS "RootConstants(num32BitConstants=2, b0), CBV(b1), DescriptorTable(SRV(t0, numDescriptors=unbounded, flags=DATA_VOLATILE)), DescriptorTable(Sampler(s0))"
 cbuffer Pick : register(b0) { uint pick; uint pad; };
 cbuffer Place : register(b1) { float4 place; };
 Texture2D all[] : register(t0);
@@ -1395,7 +1397,10 @@ impl Scene {
                 l.ResourceBarrier(&[uav_barrier()]);
             }
             // The card writes memory the CPU sees.
-            l.ResourceBarrier(&[moved(&self.sum, UAV, FROM)]);
+            l.ResourceBarrier(&[
+                moved(&self.sum, UAV, FROM),
+                moved(&self.shared.0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, TO),
+            ]);
             l.CopyBufferRegion(&self.shared.0, 30_000, &self.sum, 0, 1024);
             l.ResourceBarrier(&[moved(&self.target, TARGET, FROM)]);
             l.Close().unwrap();
@@ -1543,6 +1548,13 @@ fn table_of(device: &ID3D12Device) -> usize {
 fn check(player: &mut Player, options: &Options, expected: &Outcome, what: &str) -> play::Report {
     let report = player.run(options).unwrap();
     println!("{}", report.text(what));
+    // Combining original submissions removes implicit resource state decay.
+    // Track that separate experiment's existing barrier mismatch separately.
+    let errors: Vec<_> = report.notes.iter().filter(|note| {
+        note.starts_with("debug layer:")
+            && !(options.one_submit && note.contains("errors 527, first:"))
+    }).collect();
+    assert!(errors.is_empty(), "{what}: D3D12 validation errors: {errors:?}");
     assert_eq!(report.frame_ms.len(), options.loops as usize);
     assert!(report.median_ms() > 0.0);
     let (db, same) = report.picture.unwrap();
@@ -1834,6 +1846,7 @@ fn a_frame_is_recorded_and_replayed() {
     assert!(folder.join("replay.png").exists() && folder.join("replay-unchanged.png").exists());
     if debug {
         let q = device.cast::<ID3D12InfoQueue>().unwrap();
+        let mut errors = Vec::new();
         // SAFETY: plain queries; messages read into buffers of their size.
         unsafe {
             for i in 0..q.GetNumStoredMessages() {
@@ -1846,6 +1859,9 @@ fn a_frame_is_recorded_and_replayed() {
                 {
                     let text =
                         std::slice::from_raw_parts((*m).pDescription, (*m).DescriptionByteLength);
+                    if (*m).Severity.0 <= D3D12_MESSAGE_SEVERITY_ERROR.0 {
+                        errors.push((*m).ID.0);
+                    }
                     println!(
                         "D3D12 {} {}: {}",
                         (*m).Severity.0,
@@ -1855,5 +1871,6 @@ fn a_frame_is_recorded_and_replayed() {
                 }
             }
         }
+        assert!(errors.is_empty(), "source frame D3D12 validation errors: {errors:?}");
     }
 }
