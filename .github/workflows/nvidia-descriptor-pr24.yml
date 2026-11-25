@@ -1,0 +1,18 @@
+name: Validate PR 24 descriptor scans on Windows
+on:
+  push:
+    branches: [validation/nvidia-descriptor-pr24]
+permissions:
+  contents: read
+jobs:
+  descriptor-scan:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Exercise the changed descriptor scans and existing slot behavior
+        run: cargo test --locked -p victory-gpu --lib descriptor::host::tests -- --test-threads=1
+      - name: Asset policy
+        run: cargo xtask policy
