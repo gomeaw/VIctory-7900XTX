@@ -1073,12 +1073,17 @@ impl Scene {
             l.SetComputeRootUnorderedAccessView(3, self.scratch.GetGPUVirtualAddress());
             l.SetComputeRootUnorderedAccessView(4, self.budget.GetGPUVirtualAddress());
             l.Dispatch(1, 1, 1);
-            l.ResourceBarrier(&[uav_barrier(), moved(&self.scratch, UAV, ARGUMENTS)]);
+            let mut begin = moved(&self.scratch, UAV, ARGUMENTS);
+            begin.Flags = D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY;
+            l.ResourceBarrier(&[uav_barrier(), begin]);
             l.ResourceBarrier(&[moved(
                 &self.arguments,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 UAV,
             )]);
+            let mut end = moved(&self.scratch, UAV, ARGUMENTS);
+            end.Flags = D3D12_RESOURCE_BARRIER_FLAG_END_ONLY;
+            l.ResourceBarrier(&[end]);
         }
     }
 

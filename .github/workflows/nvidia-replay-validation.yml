@@ -13,9 +13,25 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: nvidia-replay
-      - name: Run the synthetic frame with D3D12 validation
+      - name: Run the target workspace replay tests
+        run: cargo test --locked -p victory-gpu --features diagnostics --lib replay:: -- --test-threads=1
+      - name: Run the synthetic frame with split barriers and D3D12 validation
         run: cargo test --locked -p victory-gpu --features diagnostics --test replay -- --test-threads=1 --nocapture
+      - name: Capture the original replay error for the same frame
+        run: |
+          git restore --source=0a43566 -- crates/victory-gpu/src/replay/edit.rs crates/victory-gpu/src/replay/play.rs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-gpu --features diagnostics --test replay -- --test-threads=1 --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $output
+          if ($status -eq 0 -or $output -notmatch 'without clamps: D3D12 validation errors') {
+            throw 'Expected the original replay to fail debug validation when skipping the clamps'
+          }
+          exit 0
