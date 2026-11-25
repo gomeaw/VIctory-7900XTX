@@ -1,0 +1,21 @@
+name: NVIDIA replay validation
+on:
+  push:
+    branches: ['validation/nvidia-replay-*']
+permissions:
+  contents: read
+env:
+  VICTORY_D3D12_WARP: '1'
+  VICTORY_TEST_D3D_DEBUG: '1'
+jobs:
+  replay:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nvidia-replay
+      - name: Run the synthetic frame with D3D12 validation
+        run: cargo test --locked -p victory-gpu --features diagnostics --test replay -- --test-threads=1 --nocapture
