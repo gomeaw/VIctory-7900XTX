@@ -2164,7 +2164,7 @@ mod tests {
         let res = crate::resource::track(&p, &native.layout, native.stage, None).unwrap();
         let io = crate::io::raise(&p, &native).unwrap();
         let st = crate::structure::structure(&p).unwrap();
-        let l = super::lower::lower(&super::lower::Parts {
+        let parts = super::lower::Parts {
             native: &native,
             p: &p,
             st: &st,
@@ -2477,20 +2477,22 @@ mod tests {
             outputs: Vec::new(),
             prims: Vec::new(),
             mesh_stride: 0,
-        })
-        .unwrap();
+        };
+        let l = super::lower::lower(&parts).unwrap();
+        TEST_HOST_WAVE.set(Some(64));
+        let native_wide = super::lower::lower(&parts).unwrap();
         TEST_HOST_WAVE.set(old_wave);
         TEST_GROUP_BASE.set(old_split);
         let base = l
             .user_data
             .iter()
             .find(|u| u.root == crate::RootType::Other(super::USER_GROUP_BASE))
-            .map(|u| u.index as usize)
             .expect("no user-data dword for the first group");
-        #[cfg(not(windows))]
-        assert!(base < l.user_data.len());
+        assert_eq!(base.dword, 0);
+        assert!(native_wide.user_data.iter().all(|u| u.root != base.root));
         #[cfg(windows)]
         if let Ok(host) = super::host::Host::new(true) {
+            let base = base.index as usize;
             let mut dxil = l.dxil;
             if let Ok(mut v) = super::validator::Validator::load(
                 super::validator::Validator::default_path().as_deref(),
@@ -2512,7 +2514,7 @@ mod tests {
             // Three groups, with the first at 0 and at 65,535: each stores
             // the id it read at slot (id & 15).
             for (first, slots) in [(0u32, [0usize, 1, 2]), (65535, [15, 0, 1])] {
-                let mut constants = vec![0u32; base + 1];
+                let mut constants = vec![0u32; cs.user_data_dwords() as usize];
                 constants[base] = first;
                 let out = host
                     .dispatch(
