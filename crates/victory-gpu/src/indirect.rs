@@ -42,6 +42,8 @@ use crate::host::{HostList, host, transition};
 
 pub(crate) mod batch;
 
+pub(crate) const SPLIT_FLAG: u32 = 1 << 3;
+
 const SOURCE: &str = r#"
 #define RS "RootConstants(num32BitConstants=6, b0), SRV(t0), SRV(t1), UAV(u0), UAV(u1)"
 cbuffer Record : register(b0) {
@@ -557,7 +559,7 @@ fn record_clamp_with(
         }
         None => (src_gpu, 0u32, 0u32),
     };
-    let flags = has_count | (u32::from(ahead) << 1) | (u32::from(split) << 3);
+    let flags = has_count | (u32::from(ahead) << 1) | (u32::from(split) * SPLIT_FLAG);
     let constants = [kind, stride, records, args_offset, flags, count_offset];
     // SAFETY: an open list; our root signature and pipeline; live source,
     // count, scratch destination, and budget buffers. `src` and `count` stay
