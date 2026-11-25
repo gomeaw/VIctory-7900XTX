@@ -26,10 +26,8 @@ use windows::core::{Interface, PCSTR, s, w};
 
 const SIZE: u32 = 128;
 
-// The descriptor entries stay fixed while a list runs, but their aliased
-// textures can be copied into between draws.
 const DRAW: &str = r#"
-#define RS "RootConstants(num32BitConstants=2, b0), CBV(b1), DescriptorTable(SRV(t0, numDescriptors=unbounded, flags=DATA_VOLATILE)), DescriptorTable(Sampler(s0))"
+#define RS "RootConstants(num32BitConstants=2, b0), CBV(b1), DescriptorTable(SRV(t0, numDescriptors=unbounded)), DescriptorTable(Sampler(s0))"
 cbuffer Pick : register(b0) { uint pick; uint pad; };
 cbuffer Place : register(b1) { float4 place; };
 Texture2D all[] : register(t0);
@@ -238,9 +236,10 @@ void main() {
 }
 "#;
 
-/// The argument clamp's parameters, with a simple bound.
+/// The argument clamp's parameters, with a simple bound. The same argument
+/// buffer is written again while still bound to the clamp.
 const CLAMP: &str = r#"
-#define RS "RootConstants(num32BitConstants=6, b0), SRV(t0), SRV(t1), UAV(u0), UAV(u1)"
+#define RS "RootConstants(num32BitConstants=6, b0), SRV(t0, flags=DATA_VOLATILE), SRV(t1, flags=DATA_VOLATILE), UAV(u0), UAV(u1)"
 cbuffer C : register(b0) { uint kind; uint stride; uint records; uint args_offset; uint has_count; uint count_offset; };
 ByteAddressBuffer from : register(t0);
 ByteAddressBuffer count : register(t1);
@@ -1713,6 +1712,35 @@ fn a_frame_is_recorded_and_replayed() {
     drop(scene);
     record::unhook(&device);
     assert_eq!(table_of(&device), own, "the device is as it was");
+    if debug {
+        let q = device.cast::<ID3D12InfoQueue>().unwrap();
+        let mut errors = Vec::new();
+        // SAFETY: plain queries; messages read into buffers of their size.
+        unsafe {
+            for i in 0..q.GetNumStoredMessages() {
+                let mut size = 0;
+                let _ = q.GetMessage(i, None, &mut size);
+                let mut buffer = vec![0u64; size.div_ceil(8)];
+                let m = buffer.as_mut_ptr().cast::<D3D12_MESSAGE>();
+                if q.GetMessage(i, Some(m), &mut size).is_ok()
+                    && (*m).Severity.0 <= D3D12_MESSAGE_SEVERITY_WARNING.0
+                {
+                    let text =
+                        std::slice::from_raw_parts((*m).pDescription, (*m).DescriptionByteLength);
+                    if (*m).Severity.0 <= D3D12_MESSAGE_SEVERITY_ERROR.0 {
+                        errors.push((*m).ID.0);
+                    }
+                    println!(
+                        "D3D12 {} {}: {}",
+                        (*m).Severity.0,
+                        (*m).ID.0,
+                        String::from_utf8_lossy(text)
+                    );
+                }
+            }
+        }
+        assert!(errors.is_empty(), "source frame D3D12 validation errors: {errors:?}");
+    }
     for name in [
         "frame.bin",
         "contents.bin",
@@ -1854,33 +1882,4 @@ fn a_frame_is_recorded_and_replayed() {
     assert_eq!(both.len(), 2);
     assert!(both.iter().all(|(_, r)| r.picture.unwrap().1));
     assert!(folder.join("replay.png").exists() && folder.join("replay-unchanged.png").exists());
-    if debug {
-        let q = device.cast::<ID3D12InfoQueue>().unwrap();
-        let mut errors = Vec::new();
-        // SAFETY: plain queries; messages read into buffers of their size.
-        unsafe {
-            for i in 0..q.GetNumStoredMessages() {
-                let mut size = 0;
-                let _ = q.GetMessage(i, None, &mut size);
-                let mut buffer = vec![0u64; size.div_ceil(8)];
-                let m = buffer.as_mut_ptr().cast::<D3D12_MESSAGE>();
-                if q.GetMessage(i, Some(m), &mut size).is_ok()
-                    && (*m).Severity.0 <= D3D12_MESSAGE_SEVERITY_WARNING.0
-                {
-                    let text =
-                        std::slice::from_raw_parts((*m).pDescription, (*m).DescriptionByteLength);
-                    if (*m).Severity.0 <= D3D12_MESSAGE_SEVERITY_ERROR.0 {
-                        errors.push((*m).ID.0);
-                    }
-                    println!(
-                        "D3D12 {} {}: {}",
-                        (*m).Severity.0,
-                        (*m).ID.0,
-                        String::from_utf8_lossy(text)
-                    );
-                }
-            }
-        }
-        assert!(errors.is_empty(), "source frame D3D12 validation errors: {errors:?}");
-    }
 }
