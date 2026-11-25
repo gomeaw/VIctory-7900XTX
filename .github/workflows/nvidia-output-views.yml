@@ -1,0 +1,47 @@
+name: NVIDIA threaded output descriptors
+on:
+  push:
+    branches: [validation/nvidia-output-views]
+permissions:
+  contents: read
+jobs:
+  threaded-views:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      VICTORY_D3D12_WARP: '1'
+      VICTORY_D3D12_DEBUG: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Reproduce and fix retargeted color and depth clears
+        run: |
+          $file = 'crates/victory-gpu/src/host.rs'
+          git restore --source=7c489e0 -- $file
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $before = cargo test --locked -p victory-gpu --features diagnostics --lib another_worker_cannot_retarget_a_pending_clear -- --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $before
+          git restore --source=$env:GITHUB_SHA -- $file
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($status -eq 0 -or $before -notmatch 'left:\s*\[0, 255, 1065353216, 1048576000\]') {
+            throw 'The old ring should clear the second color and depth textures instead of the first ones'
+          }
+          $after = cargo test --locked -p victory-gpu --features diagnostics --lib another_worker_cannot_retarget_a_pending_clear -- --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $after
+          if ($status -ne 0) { exit $status }
+          if ($after -notmatch 'both pending clears reached their own textures') { throw 'WARP verification was skipped' }
+      - name: Threaded list and texture regressions
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib list::thin::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p victory-gpu --features diagnostics --lib resource::tests -- --test-threads=1
+      - name: Asset policy
+        run: cargo xtask policy
