@@ -1,0 +1,38 @@
+name: NVIDIA translation cache keys
+on:
+  push:
+    branches: [validation/nvidia-translation-cache]
+permissions:
+  contents: read
+jobs:
+  fingerprints:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Exercise the dispatch translation setting and WARP group IDs
+        run: |
+          cargo test --locked -p victory-shader --lib dispatch_split_changes_cache_settings_only_on_wave32
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p victory-shader --lib the_group_id_in_x_starts_at_the_host_base -- --nocapture
+      - name: Verify distinct pipeline keys when switching LDS lowering
+        run: |
+          cargo build --locked -p victory
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:VICTORY_CACHE_DIR = Join-Path $env:RUNNER_TEMP 'victory-cache-key-check'
+          $env:VICTORY_DATA_DIR = Join-Path $env:RUNNER_TEMP 'victory-data-key-check'
+          New-Item -ItemType Directory -Path (Join-Path $env:VICTORY_CACHE_DIR 'pipelines') -Force | Out-Null
+          function Get-Fingerprint([string] $switchValue) {
+            $env:VICTORY_LDS_FLAGS = $switchValue
+            $output = target/debug/victory.exe warm --limit 0 --jobs 1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw $output }
+            if ($output -notmatch 'made before \(([0-9a-f]{16})\)') { throw $output }
+            return $Matches[1]
+          }
+          $off = Get-Fingerprint '0'
+          $on = Get-Fingerprint '1'
+          $again = Get-Fingerprint '0'
+          Write-Host "LDS off $off, on $on, off again $again"
+          if ($off -eq $on -or $off -ne $again) { throw 'The pipeline key did not distinguish the LDS setting' }
