@@ -26,7 +26,7 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           $path = 'crates/victory-shader/src/emit/lower.rs'
-          git restore --source=0a43566532c57b34a5397d6fdc91e419de32e8e9 -- $path
+          git restore --source=f249fe0 -- $path
           if ($LASTEXITCODE -ne 0) { throw 'Could not restore the baseline emitter' }
           try {
             $output = cargo test --locked -p victory-shader --lib a_first_lane_read_of_a_wave_alike_sum_under_a_wave_alike_loop -- --nocapture 2>&1
