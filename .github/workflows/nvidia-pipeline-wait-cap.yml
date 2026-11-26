@@ -1,0 +1,24 @@
+name: Reserve pipeline waits across frames
+on:
+  push:
+    branches: [validation/nvidia-pipeline-wait-cap]
+permissions:
+  contents: read
+jobs:
+  wait-budget:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Pipeline worker tests
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib 'pipeline::make::tests' -- --test-threads=1
+      - name: Repeat the overlapping-frame regression
+        run: |
+          foreach ($round in 1..8) {
+            cargo test --locked -p victory-gpu --features diagnostics --lib overlapping_frames_share_one_pipeline_reservation -- --nocapture
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - run: cargo xtask policy
