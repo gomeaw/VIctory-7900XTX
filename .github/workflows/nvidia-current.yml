@@ -1,0 +1,53 @@
+name: NVIDIA preview on current main
+on:
+  push:
+    branches: [validation/nvidia-current]
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Select the SDK DXIL validator
+        run: |
+          $kits = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory
+          $dxil = $kits | Sort-Object Name -Descending | ForEach-Object {
+            Join-Path $_.FullName 'x64\dxil.dll'
+          } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $dxil) { throw 'No SDK DXIL validator found' }
+          "VICTORY_DXIL=$dxil" >> $env:GITHUB_ENV
+      - name: Windows workspace tests in serial
+        # The WARP depth-bounds failure was reproduced on the original base.
+        run: cargo test --workspace --locked -- --test-threads=1 --skip pipeline::host::tests::depth_bounds_pipeline_loads_and_filters_draws
+      - name: Verify the BVH shaders reached the DXIL validator
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-shader --lib wave64_tests -- --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          foreach ($shader in @('prefix', 'partial dispatch')) {
+            if (($output | Out-String) -notmatch "DXIL validator accepted the wave32 ${shader} shader") {
+              throw "DXIL validation skipped for ${shader}"
+            }
+          }
+      - name: Synthetic frame with D3D12 validation
+        env:
+          VICTORY_D3D12_WARP: '1'
+          VICTORY_TEST_D3D_DEBUG: '1'
+        run: cargo test --locked -p victory-gpu --features diagnostics --test replay -- --test-threads=1 --nocapture
+      - name: Overlapping copy-queue readback
+        env:
+          VICTORY_D3D12_WARP: '1'
+          VICTORY_RELAY: '2'
+          VICTORY_RELAY_COPY: '1'
+          VICTORY_CARD_BUFFERS_MIN_MB: '1'
+          VICTORY_UPCOPY_CHECK: '1'
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib -- 'host::upcheck::tests::a_result_caught_in_between_is_put_right' --exact --ignored --nocapture
+      - run: cargo check --locked --profile diag -p victory --features diagnostics
+      - run: cargo xtask policy
