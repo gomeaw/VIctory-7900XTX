@@ -749,10 +749,10 @@ mod tests {
 
     /// (e) of the list in `Host::relay_card_back`'s fetch: a flight's result
     /// is fetched while the next flight is at the same bytes, which ends with
-    /// what it found. Without `VICTORY_FETCH_CHECK` title memory keeps what
+    /// what it found. With `VICTORY_FETCH_CHECK=0` title memory can keep what
     /// was in between, and the next refresh of the 64 KiB sends it up.
     #[test]
-    #[ignore = "wants VICTORY_RELAY=2 VICTORY_RELAY_COPY=1 and a process of its own"]
+    #[ignore = "wants VICTORY_RELAY=2 VICTORY_RELAY_COPY=1 VICTORY_CARD_BUFFERS_MIN_MB=1 and a process of its own"]
     fn a_result_caught_in_between_is_put_right() {
         let Some(host) = host() else {
             return;
@@ -797,7 +797,8 @@ mod tests {
             super::torn::STATS.iter().map(|s| s.load(Ordering::Relaxed)).collect::<Vec<_>>()
         );
         assert_eq!(look(host), Some(0));
-        assert_eq!((wrong, undone), (0, 0), "without VICTORY_FETCH_CHECK=1 most are wrong");
+        assert_eq!((wrong, undone), (0, 0), "copy-queue readback left an intermediate value");
+        assert!(super::torn::STATS[0].load(Ordering::Relaxed) > 0, "no pieces passed through the copy-queue check");
     }
 
     /// What nobody declared: a shader writes a piece through a view that was

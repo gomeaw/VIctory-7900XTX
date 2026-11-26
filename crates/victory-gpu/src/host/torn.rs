@@ -1,5 +1,5 @@
 //! Pieces of card copies that came down while a later flight was writing
-//! them (`VICTORY_FETCH_CHECK`, with `VICTORY_RELAY_COPY`).
+//! them (with `VICTORY_RELAY_COPY`; `VICTORY_FETCH_CHECK=0` for comparisons).
 //!
 //! On the copy queue a fetch runs beside later submissions (`relay_copy`),
 //! so what comes down of a piece may be what it held in the middle of one:
@@ -27,12 +27,12 @@ use std::sync::atomic::AtomicU8;
 
 use super::*;
 
-/// `VICTORY_FETCH_CHECK=1`; off by default until a run has shown how often a
-/// piece is caught (the frame-rate line says so) and what the hashes cost
-/// (3-4 ms for 96 MB beside the merge, spread over the threads that land).
+/// Check fetches on the copy queue by default. A later flight can change a
+/// piece while the copy queue reads it and restore it before its comparison.
+/// `VICTORY_FETCH_CHECK=0` is useful for measuring the cost of hashing the
+/// pieces alongside the merge.
 pub(super) fn on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_FETCH_CHECK").is_some_and(|v| v == "1"))
+    crate::toggled!("VICTORY_FETCH_CHECK")
 }
 
 /// A piece: its copy's number, and the piece.
