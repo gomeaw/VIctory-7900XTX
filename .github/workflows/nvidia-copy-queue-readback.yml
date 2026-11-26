@@ -43,9 +43,10 @@ jobs:
           $output = cargo test --locked -p victory-gpu --features diagnostics --lib -- $test --ignored --exact --nocapture 2>&1
           $status = $LASTEXITCODE
           $output | Write-Host
-          if ($status -eq 0 -or ($output | Out-String) -notmatch 'pieces checked, suspect, put right: \[0, 0, 0\]') {
-            throw 'The benchmark override did not disable fetch validation'
+          if ($status -eq 0 -or ($output | Out-String) -notmatch '(?:[1-9]|1[0-2]) of 12 results wrong in title memory, [0-9]+ undone on the card; pieces checked, suspect, put right: \[0, 0, 0\]') {
+            throw 'The benchmark override did not reproduce the unchecked readback'
           }
+          exit 0
       - name: Hash and relay tests
         run: |
           cargo test --locked -p victory-gpu --lib 'host::torn::'
