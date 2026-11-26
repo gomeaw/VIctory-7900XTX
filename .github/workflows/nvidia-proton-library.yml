@@ -1,0 +1,27 @@
+name: Check D3D12 pipeline library recovery
+on:
+  push:
+    branches: [validation/nvidia-proton-library]
+permissions:
+  contents: read
+jobs:
+  library:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      VICTORY_D3D12_WARP: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Recover from a rejected blob and reopen the replacement
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-gpu --features diagnostics --lib 'pipeline::library::tests' -- --nocapture --test-threads=1 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          if (($output | Out-String) -notmatch 'the replacement pipeline library serialized and reopened') {
+            throw 'The native D3D12 library test skipped'
+          }
+      - run: cargo xtask policy
