@@ -1114,6 +1114,7 @@ fn partial_dispatch_with_a_cross_half_wave_op_runs_in_32_lane_waves() {
     };
     if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
         v.validate(&mut shader.dxil.clone()).unwrap_or_else(|e| panic!("DXIL validation: {e}"));
+        eprintln!("DXIL validator accepted the wave32 partial dispatch shader");
     }
     let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(host) = Host::new(false) else { return };
