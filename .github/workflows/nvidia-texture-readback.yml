@@ -1,0 +1,50 @@
+name: Track texture readbacks in the relay
+on:
+  push:
+    branches: [validation/nvidia-texture-readback]
+permissions:
+  contents: read
+jobs:
+  readback:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      VICTORY_D3D12_WARP: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Reproduce the missing dependency
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'crates/victory-gpu/src/host.rs'
+          $patched = [System.IO.File]::ReadAllText((Resolve-Path $path))
+          $match = 'texture_back_ranges.extend(list.deferred().readback_ranges());'
+          if (!$patched.Contains($match)) { throw 'The late submission call changed' }
+          try {
+            $old = $patched.Replace($match, 'texture_back_ranges.extend(list.deferred().texture_backs.iter().map(crate::texback::Back::range));')
+            [System.IO.File]::WriteAllText((Resolve-Path $path), $old)
+            $output = cargo test --locked -p victory-gpu --features diagnostics --lib a_late_texture_readback_blocks_a_following_cpu_copy -- --nocapture 2>&1
+            $status = $LASTEXITCODE
+            $output | Write-Host
+            if ($status -eq 0 -or ($output | Out-String) -notmatch 'left: None') {
+              throw 'The old submission failed to reproduce the missing dependency'
+            }
+          } finally {
+            [System.IO.File]::WriteAllText((Resolve-Path $path), $patched)
+          }
+          exit 0
+      - name: Exercise the late submission and its readback
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-gpu --features diagnostics --lib 'host::late_tests' -- --test-threads=1 --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          if (($output | Out-String) -notmatch 'the pending texture readback blocked a later CPU copy') {
+            throw 'The D3D12 regression did not run'
+          }
+      - name: Card-step scheduling
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib 'host::card_steps::tests' -- --test-threads=1
+      - run: cargo xtask policy
