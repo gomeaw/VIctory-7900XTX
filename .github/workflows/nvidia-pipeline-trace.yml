@@ -13,7 +13,9 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Pipeline worker and library tests
-        run: cargo test --locked -p victory-gpu --features diagnostics --lib pipeline:: -- --test-threads=1 --skip depth_bounds_pipeline_loads_and_filters_draws
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib pipeline:: -- --test-threads=1 --skip depth_bounds_pipeline_loads_and_filters_draws
       - name: Timeline report tests
-        run: cargo test --locked -p victory-gpu --features diagnostics --lib timeline:: -- --test-threads=1
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib timeline:: -- --test-threads=1
       - run: cargo check --locked --profile diag -p victory --features diagnostics
