@@ -829,9 +829,17 @@ mod tests {
             return; // no host GPU here
         };
         let library = open(&device, Blob::Held(b"not a pipeline library".repeat(16))).expect("an empty library");
-        // SAFETY: a plain query on a live library.
-        assert!(unsafe { library.library.GetSerializedSize() } > 0);
         assert!(matches!(library._blob, Blob::None));
+        // SAFETY: a plain query followed by serialization to the size it reported.
+        let bytes = unsafe {
+            let mut bytes = vec![0; library.library.GetSerializedSize()];
+            assert!(!bytes.is_empty());
+            library.library.Serialize(&mut bytes).expect("serialize the replacement library");
+            bytes
+        };
+        let reopened = open(&device, Blob::Held(bytes)).expect("a serialized library");
+        assert!(matches!(reopened._blob, Blob::Held(_)), "the saved blob was accepted");
+        eprintln!("the replacement pipeline library serialized and reopened");
     }
 
     /// A mapped file reads as the file's bytes, a file written through a
