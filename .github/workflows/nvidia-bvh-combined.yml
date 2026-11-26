@@ -1,0 +1,44 @@
+name: NVIDIA BVH preview
+on:
+  push:
+    branches: [validation/nvidia-bvh-combined]
+permissions:
+  contents: read
+jobs:
+  shader-tests:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Select the SDK DXIL validator
+        run: |
+          $kits = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory
+          $dxil = $kits | Sort-Object Name -Descending | ForEach-Object {
+            Join-Path $_.FullName 'x64\dxil.dll'
+          } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $dxil) { throw 'No SDK DXIL validator found' }
+          "VICTORY_DXIL=$dxil" >> $env:GITHUB_ENV
+      - name: Run shader tests and validate emitted DXIL
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-shader --lib -- --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          if (($output | Out-String) -notmatch 'DXIL validator accepted the wave32 prefix shader') {
+            throw 'The prefix scan skipped DXIL validation'
+          }
+          if (($output | Out-String) -notmatch 'DXIL validator accepted the wave32 partial dispatch shader') {
+            throw 'The partial dispatch skipped DXIL validation'
+          }
+      - name: Check optimized prefix scan
+        env:
+          VICTORY_SHADER_OPT: '127'
+        run: cargo test --locked -p victory-shader --lib prefix -- --nocapture
+      - name: Build the diagnostics profile
+        run: cargo check --locked --profile diag -p victory --features diagnostics
+      - run: cargo xtask policy
