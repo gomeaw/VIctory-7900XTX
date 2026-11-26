@@ -1,0 +1,45 @@
+name: Wave32 LDS read barriers on NVIDIA preview
+on:
+  push:
+    branches: [validation/nvidia-lds-perf]
+permissions:
+  contents: read
+jobs:
+  shaders:
+    runs-on: windows-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Select the SDK DXIL validator
+        run: |
+          $kits = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory
+          $dxil = $kits | Sort-Object Name -Descending | ForEach-Object {
+            Join-Path $_.FullName 'x64\dxil.dll'
+          } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $dxil) { throw 'No SDK DXIL validator found' }
+          "VICTORY_DXIL=$dxil" >> $env:GITHUB_ENV
+      - name: Validate Wave32 and check Wave64 kept its explicit barrier
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-shader --lib -- --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          $log = $output | Out-String
+          if ($log -notmatch 'wave32 LDS barriers: 4; wave64 LDS barriers: 1' -or $log -notmatch 'DXIL validator accepted the LDS read runs') {
+            throw 'Expected barrier counts or DXIL validation were missing'
+          }
+      - name: Check optimized lowering
+        env:
+          VICTORY_SHADER_OPT: '127'
+        run: cargo test --locked -p victory-shader --lib wave32_lds_read_runs_share_a_barrier -- --nocapture
+      - name: Keep the fence-only diagnostic mode intact
+        env:
+          VICTORY_GROUP_SYNC: '0'
+        run: cargo test --locked -p victory-shader --lib wave32_lds_read_runs_share_a_barrier -- --nocapture
+      - run: cargo check --locked --profile diag -p victory --features diagnostics
+      - run: cargo xtask policy
