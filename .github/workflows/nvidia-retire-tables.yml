@@ -1,0 +1,26 @@
+name: Retire NVIDIA dynamic descriptor tables after the GPU fence
+on:
+  push:
+    branches: [validation/nvidia-retire-tables]
+permissions:
+  contents: read
+jobs:
+  descriptor-retirement:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      VICTORY_D3D12_WARP: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Check descriptor reuse at the GPU fence
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-gpu --features diagnostics --lib host::relay_tests -- --test-threads=1 --nocapture 2>&1 | Out-String
+          $status = $LASTEXITCODE
+          Write-Host $output
+          if ($status -ne 0) { exit $status }
+          if ($output -notmatch 'completed fence released [0-9]+ dynamic descriptor slots before list recycle') { throw 'WARP retirement test was skipped' }
+      - name: Asset policy
+        run: cargo xtask policy
