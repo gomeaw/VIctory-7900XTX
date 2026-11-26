@@ -1,0 +1,19 @@
+name: NVIDIA pipeline worker timing
+on:
+  push:
+    branches: [validation/nvidia-pipeline-trace]
+permissions:
+  contents: read
+jobs:
+  diagnostics:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Pipeline worker and library tests
+        run: cargo test --locked -p victory-gpu --features diagnostics --lib pipeline:: -- --test-threads=1 --skip depth_bounds_pipeline_loads_and_filters_draws
+      - name: Timeline report tests
+        run: cargo test --locked -p victory-gpu --features diagnostics --lib timeline:: -- --test-threads=1
+      - run: cargo check --locked --profile diag -p victory --features diagnostics
