@@ -1,0 +1,29 @@
+name: Verify readback ordering on the NVIDIA preview
+on:
+  push:
+    branches: [validation/nvidia-readback-order]
+permissions:
+  contents: read
+jobs:
+  readback:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      VICTORY_D3D12_WARP: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Texture readback and card-step dependency tests
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib 'host::late_tests' -- --test-threads=1 --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p victory-gpu --features diagnostics --lib 'host::card_steps::tests' -- --test-threads=1
+      - name: Overlapping card buffer readback
+        env:
+          VICTORY_RELAY: '2'
+          VICTORY_RELAY_COPY: '1'
+          VICTORY_CARD_BUFFERS_MIN_MB: '1'
+          VICTORY_UPCOPY_CHECK: '1'
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib -- 'host::upcheck::tests::a_result_caught_in_between_is_put_right' --exact --ignored --nocapture
