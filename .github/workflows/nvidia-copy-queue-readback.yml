@@ -1,0 +1,54 @@
+name: Check overlapped card readback
+on:
+  push:
+    branches: [validation/nvidia-copy-queue-readback]
+permissions:
+  contents: read
+jobs:
+  readback:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Check overlapping readback with the default configuration
+        env:
+          VICTORY_D3D12_WARP: '1'
+          VICTORY_RELAY: '2'
+          VICTORY_RELAY_COPY: '1'
+          VICTORY_CARD_BUFFERS_MIN_MB: '1'
+          VICTORY_UPCOPY_CHECK: '1'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $test = 'host::upcheck::tests::a_result_caught_in_between_is_put_right'
+          $output = cargo test --locked -p victory-gpu --features diagnostics --lib -- $test --ignored --exact --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          if (($output | Out-String) -notmatch '0 of 12 results wrong in title memory, 0 undone on the card; pieces checked, suspect, put right: \[[1-9][0-9]*,') {
+            throw 'The readback check did not run'
+          }
+      - name: Check the explicit benchmark override
+        env:
+          VICTORY_D3D12_WARP: '1'
+          VICTORY_RELAY: '2'
+          VICTORY_RELAY_COPY: '1'
+          VICTORY_CARD_BUFFERS_MIN_MB: '1'
+          VICTORY_UPCOPY_CHECK: '1'
+          VICTORY_FETCH_CHECK: '0'
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $test = 'host::upcheck::tests::a_result_caught_in_between_is_put_right'
+          $output = cargo test --locked -p victory-gpu --features diagnostics --lib -- $test --ignored --exact --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -eq 0 -or ($output | Out-String) -notmatch 'pieces checked, suspect, put right: \[0, 0, 0\]') {
+            throw 'The benchmark override did not disable fetch validation'
+          }
+      - name: Hash and relay tests
+        run: |
+          cargo test --locked -p victory-gpu --lib 'host::torn::'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p victory-gpu --lib 'host::relay_tests::' -- --test-threads=1
+      - run: cargo xtask policy
