@@ -43,9 +43,8 @@ pub(crate) struct Pending {
     used: AtomicBool,
     /// A pass over the screen ([`GraphicsState::screen_pass`]).
     screen: bool,
-    /// Cumulative microseconds waited on this pipeline across frames so a
-    /// slow or stuck compile cannot consume every frame's wait budget.
-    waited_us: AtomicU64,
+    /// Time already waited across frames, including active reservations.
+    wait_spent: Mutex<Duration>,
 }
 
 // SAFETY: D3D12 objects are free-threaded; the graphics state (whose input
@@ -71,7 +70,7 @@ impl Pending {
             made: OnceLock::new(),
             key: key.finalize().to_hex()[..32].to_owned(),
             used: AtomicBool::new(false),
-            waited_us: AtomicU64::new(0),
+            wait_spent: Mutex::new(Duration::ZERO),
         }
     }
 
@@ -89,17 +88,19 @@ impl Pending {
     }
 
     fn make_with(&self, build: impl FnOnce() -> Option<HostPipeline>) {
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.made.get_or_init(build);
-        }));
-        if outcome.is_err() {
-            tracing::error!(
-                key = %self.key,
-                shaders = ?self.shaders,
-                "pipeline worker panicked while building host pipeline; refusing it"
-            );
-            let _ = self.made.set(None);
-        }
+        self.made.get_or_init(|| {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+                Ok(made) => made,
+                Err(_) => {
+                    tracing::error!(
+                        key = %self.key,
+                        shaders = ?self.shaders,
+                        "pipeline worker panicked while building host pipeline; refusing it"
+                    );
+                    None
+                }
+            }
+        });
         let (lock, done) = &DONE;
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         done.notify_all();
@@ -259,17 +260,19 @@ fn wait_with(
     if budget.is_zero() {
         return None;
     }
-    let already = Duration::from_micros(p.waited_us.load(Ordering::Relaxed));
-    let pipeline_left = budget.saturating_sub(already);
-    if pipeline_left.is_zero() {
-        return None;
-    }
     let left = {
         let mut spent = spent_of.lock().unwrap_or_else(|e| e.into_inner());
         if spent.0 != frame {
+            if spent.0 != u64::MAX && frame < spent.0 {
+                return None;
+            }
             *spent = (frame, Duration::ZERO);
         }
-        let left = budget.saturating_sub(spent.1).min(pipeline_left);
+        let mut pipeline = p.wait_spent.lock().unwrap_or_else(|e| e.into_inner());
+        let left = budget.saturating_sub(spent.1.max(*pipeline));
+        // Reserve before waiting so another frame or recording thread
+        // sees this time even if this waiter has yet to spend it.
+        *pipeline += left;
         if shared {
             spent.1 += left;
         }
@@ -291,15 +294,10 @@ fn wait_with(
     drop(held);
     let elapsed = started.elapsed();
     let waited = elapsed.min(left);
-    let charge = if p.made.get().is_none() && elapsed >= left {
-        left
-    } else {
-        waited
-    };
-    p.waited_us
-        .fetch_add(charge.as_micros().min(u128::from(u64::MAX)) as u64, Ordering::Relaxed);
     {
         let mut spent = spent_of.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pipeline = p.wait_spent.lock().unwrap_or_else(|e| e.into_inner());
+        *pipeline -= left - waited;
         // A frame that began meanwhile has its own budget.
         if spent.0 == frame {
             if shared {
@@ -637,7 +635,7 @@ mod tests {
         // Frame 1: `slow` spends its full allowance once.
         let first = wait_with(&slow, 1, budget, true, &spent);
         assert!(first.is_some());
-        assert!(Duration::from_micros(slow.waited_us.load(Ordering::Relaxed)) >= budget);
+        assert_eq!(*slow.wait_spent.lock().unwrap(), budget);
 
         // Frame 2: `slow` must return immediately without touching frame 2's budget.
         let started = Instant::now();
@@ -646,6 +644,33 @@ mod tests {
 
         // Frame 2's budget is still available for another pipeline.
         assert!(wait_with(&fresh, 2, budget, true, &spent).is_some());
+    }
+
+    #[test]
+    fn overlapping_frames_share_one_pipeline_reservation() {
+        let slow = Pending::new(Vec::new(), None);
+        let spent = Mutex::new((u64::MAX, Duration::ZERO));
+        let budget = Duration::from_secs(5);
+        let held = DONE.0.lock().unwrap_or_else(|e| e.into_inner());
+        std::thread::scope(|threads| {
+            let first = threads.spawn(|| wait_with(&slow, 1, budget, true, &spent));
+            let started = Instant::now();
+            while *spent.lock().unwrap() != (1, budget) {
+                assert!(started.elapsed() < Duration::from_secs(2), "first waiter did not reserve its frame budget");
+                std::thread::yield_now();
+            }
+            let (send, receive) = std::sync::mpsc::channel();
+            let pending = &slow;
+            let frame_spent = &spent;
+            threads.spawn(move || send.send(wait_with(pending, 2, budget, true, frame_spent)).unwrap());
+            let second = receive.recv_timeout(Duration::from_secs(2));
+            drop(held);
+            slow.make_with(|| None);
+            assert!(matches!(second, Ok(None)), "the second frame tried to wait: {second:?}");
+            assert!(first.join().unwrap().is_some());
+            assert!(*slow.wait_spent.lock().unwrap() < budget);
+            assert!(wait_with(&slow, 1, budget, true, &spent).is_none(), "a past frame reopened its budget");
+        });
     }
 
     #[test]
