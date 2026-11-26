@@ -15,6 +15,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Check fragmented ranges and real D3D12 descriptor heaps
-        run: cargo test --locked -p victory-gpu --features diagnostics --lib descriptor::host:: -- --test-threads=1 --nocapture
+        run: |
+          cargo test --locked -p victory-gpu --features diagnostics --lib descriptor::host:: -- --test-threads=1 --nocapture
       - name: Asset policy
         run: cargo xtask policy
