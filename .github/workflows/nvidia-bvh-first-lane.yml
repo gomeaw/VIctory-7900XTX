@@ -1,0 +1,56 @@
+name: NVIDIA BVH prefix scan
+on:
+  push:
+    branches: [validation/nvidia-bvh-first-lane]
+permissions:
+  contents: read
+jobs:
+  shader-tests:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Select the SDK DXIL validator
+        run: |
+          $kits = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory
+          $dxil = $kits | Sort-Object Name -Descending | ForEach-Object {
+            Join-Path $_.FullName 'x64\dxil.dll'
+          } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $dxil) { throw 'No SDK DXIL validator found' }
+          "VICTORY_DXIL=$dxil" >> $env:GITHUB_ENV
+      - name: Reproduce the first-lane rejection on the target branch
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $path = 'crates/victory-shader/src/emit/lower.rs'
+          git restore --source=0a43566532c57b34a5397d6fdc91e419de32e8e9 -- $path
+          if ($LASTEXITCODE -ne 0) { throw 'Could not restore the baseline emitter' }
+          try {
+            $output = cargo test --locked -p victory-shader --lib a_first_lane_read_of_a_wave_alike_sum_under_a_wave_alike_loop -- --nocapture 2>&1
+            $status = $LASTEXITCODE
+            $output | Write-Host
+            if ($status -eq 0 -or ($output | Out-String) -notmatch 'a first-lane read where not every lane runs') {
+              throw 'The baseline did not reproduce the expected first-lane failure'
+            }
+          } finally {
+            git restore --source=$env:GITHUB_SHA -- $path
+            if ($LASTEXITCODE -ne 0) { throw 'Could not restore the patched emitter' }
+          }
+      - name: Run shader tests and validate emitted DXIL
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $output = cargo test --locked -p victory-shader --lib -- --nocapture 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          if ($status -ne 0) { exit $status }
+          if (($output | Out-String) -notmatch 'DXIL validator accepted the wave32 prefix shader') {
+            throw 'The prefix scan skipped DXIL validation'
+          }
+      - name: Check optimized prefix scan
+        env:
+          VICTORY_SHADER_OPT: '127'
+        run: cargo test --locked -p victory-shader --lib prefix -- --nocapture
+      - run: cargo xtask policy
